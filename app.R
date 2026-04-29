@@ -8,40 +8,52 @@ library(plotly)
 library(jsonlite)
 
 # ── Load data ──────────────────────────────────────────────────────────────────
-raster_list <- readRDS("data/raster_list.rds")
-dat <- readRDS("data/CPFV_PA_sp_decade_roms_n_ensemble_shiny.rds")
+raster_list        <- readRDS("data/raster_list.rds")
+raster_list_inverts <- readRDS("data/invert_raster_list.rds")
 
-# -- Raw Data for Time series
-dat_raw <- dat
+dat_fish   <- readRDS("data/CPFV_PA_sp_decade_roms_n_ensemble_shiny.rds")
+dat_inverts <- readRDS("data/Inverts_PA_sp_decade_roms_n_ensemble_shiny.rds")
 
-dat_raw_by_species <- dat_raw %>%
-  group_by(species) %>%
-  group_split() %>%
-  setNames(sort(unique(dat_raw$species)))
+# ── Helper: prepare a dat object for either group ─────────────────────────────
+prepare_dat <- function(raw) {
+  raw <- raw %>%
+    mutate(
+      lat = as.numeric(sub("-.*", "", cell_coord_id)),
+      lon = -as.numeric(sub(".*-", "", cell_coord_id)),
+      species = as.character(species),
+      decade  = as.character(decade)
+    ) %>%
+    group_by(cell_coord_id, decade, species, lat, lon) %>%
+    summarise(pa_decade_mean_pa = mean(pa_decade_mean_pa, na.rm = TRUE),
+              .groups = "drop")
+  raw
+}
 
-dat_ens_by_species <- dat %>%
-  group_by(species) %>%
-  group_split() %>%
-  setNames(sort(unique(dat$species)))
+dat_fish    <- prepare_dat(dat_fish)
+dat_inverts <- prepare_dat(dat_inverts)
 
-# format: "lat-lon", e.g. "33-117.3"
-dat <- dat %>%
-  mutate(
-    lat = as.numeric(sub("-.*", "", cell_coord_id)),
-    lon = -as.numeric(sub(".*-", "", cell_coord_id))
-  ) %>%
-  mutate(
-    species = as.character(species),
-    decade  = as.character(decade)
-  )
+# ── Raw data for time series ───────────────────────────────────────────────────
+raw_fish    <- readRDS("data/CPFV_PA_sp_decade_roms_n_ensemble_shiny.rds") %>%
+  mutate(species = as.character(species), decade = as.character(decade))
+raw_inverts <- readRDS("data/Inverts_PA_sp_decade_roms_n_ensemble_shiny.rds") %>%
+  mutate(species = as.character(species), decade = as.character(decade))
 
-dat <- dat %>%
-  group_by(cell_coord_id, decade, species, lat, lon) %>%
-  summarise(pa_decade_mean_pa = mean(pa_decade_mean_pa, na.rm = TRUE),
-            .groups = "drop")
+make_raw_by_species <- function(d) {
+  d %>% group_by(species) %>% group_split() %>%
+    setNames(sort(unique(d$species)))
+}
+make_ens_by_species <- function(d) {
+  d %>% group_by(species) %>% group_split() %>%
+    setNames(sort(unique(d$species)))
+}
 
-# ── Species name lookup (code → common name) ──────────────────────────────────
-species_labels <- c(
+raw_fish_by_sp    <- make_raw_by_species(raw_fish)
+raw_inverts_by_sp <- make_raw_by_species(raw_inverts)
+ens_fish_by_sp    <- make_ens_by_species(dat_fish)
+ens_inverts_by_sp <- make_ens_by_species(dat_inverts)
+
+# ── Species name lookups ───────────────────────────────────────────────────────
+fish_labels <- c(
   "Black_rockfish"       = "Black Rockfish",
   "California_barracuda" = "California Barracuda",
   "California_halibut"   = "California Halibut",
@@ -51,18 +63,32 @@ species_labels <- c(
   "Ocean_whitefish"      = "Ocean Whitefish"
 )
 
-# Pre-split for fast reactive filtering
-keys <- sort(unique(paste(dat$species, dat$decade, sep = "||")))
-dat_split <- dat %>%
-  arrange(species, decade) %>%
-  group_by(species, decade) %>%
-  group_split() %>%
-  setNames(keys)
+invert_labels <- c(
+  "red_urchin" = "Red Urchin",
+  'CA_Lobster' = "CA Spiny Lobster",
+  'market_squid' = "Market Squid",
+  'pink_shrimp' = "Pink Shrimp",
+  'Ridgeback_prawn' = "Ridgeback Prawn",
+  'Sea_cucumber' = "Sea Cucumber"
+)
 
-species_list <- sort(unique(dat$species))
-decade_list  <- sort(unique(dat$decade))
+# ── Pre-split helpers ──────────────────────────────────────────────────────────
+make_split <- function(d) {
+  keys <- sort(unique(paste(d$species, d$decade, sep = "||")))
+  d %>%
+    arrange(species, decade) %>%
+    group_by(species, decade) %>%
+    group_split() %>%
+    setNames(keys)
+}
 
-decade_labels <- setNames(seq_along(decade_list), decade_list)
+fish_split    <- make_split(dat_fish)
+inverts_split <- make_split(dat_inverts)
+
+fish_species_list    <- sort(unique(dat_fish$species))
+inverts_species_list <- sort(unique(dat_inverts$species))
+
+decade_list <- sort(unique(dat_fish$decade))
 
 # ── Colour palette ─────────────────────────────────────────────────────────────
 pal_fun <- colorNumeric(
@@ -71,7 +97,7 @@ pal_fun <- colorNumeric(
   na.color = "transparent"
 )
 
-# ── UI ────────────────────────────────────────────────────────────────────────
+# ── UI ─────────────────────────────────────────────────────────────────────────
 ui <- fluidPage(
   tags$head(
     tags$style(HTML("
@@ -106,40 +132,50 @@ ui <- fluidPage(
                        border: 2px solid #c0cfe0; padding: 7px 10px;
                        color: #1a3a5c; font-size: 0.88rem; font-weight: 600;
                        background: white; }
+      /* Group tab switcher */
+      .group-tabs { display: flex; gap: 0; margin-bottom: 14px;
+                    border-radius: 8px; overflow: hidden;
+                    border: 2px solid #1a3a5c; }
+      .group-tab  { flex: 1; padding: 7px 0; text-align: center;
+                    font-size: 0.85rem; font-weight: 700; cursor: pointer;
+                    background: white; color: #1a3a5c;
+                    border: none; transition: background .15s, color .15s; }
+      .group-tab:hover  { background: #c8d8ec; }
+      .group-tab.active { background: #1a3a5c; color: white; }
     "))
   ),
   
-  # Header (no icon)
   div(class = "app-header",
       h2("Species Distribution — Mean Decadal Environmental Suitability"),
       div(class = "subtitle", "ROMS ensemble model · ensemble Mean Decadal Environmental Suitability"),
-      div(style = "margin-top: 10px;",
-          sliderInput("decade_select", label = NULL,
-                      min   = 1,
-                      max   = length(decade_list),
-                      value = 1,
-                      step  = 1,
-                      width = "100%",
-                      ticks = FALSE,   # hide the numeric tick marks
-                      animate = FALSE)
-      )
   ),
   
   fluidRow(
-    # ── Sidebar ──
     column(3,
            div(class = "sidebar-panel",
+               
+               # ── Group tab switcher ──
+               div(class = "section-label", "Decade"),
+               sliderInput("decade_select", label = NULL,
+                           min   = 1,
+                           max   = length(decade_list),
+                           value = 1,
+                           step  = 1,
+                           width = "100%",
+                           ticks = FALSE,
+                           animate = FALSE),
+               div(class = "group-tabs",
+                   tags$button(id = "tab_fish",   class = "group-tab active", "Fish"),
+                   tags$button(id = "tab_inverts", class = "group-tab",       "Inverts")
+               ),
                div(class = "section-label", "Species"),
                uiOutput("species_buttons"),
-               div(class = "stat-box",
-                   uiOutput("stats_out")
-               ),
+               div(class = "stat-box", uiOutput("stats_out")),
                div(class = "section-label", "Mean Decadal Environmental Suitability"),
                plotlyOutput("ts_plot", height = "220px"),
                uiOutput("ts_legend")
            )
     ),
-    # ── Map ──
     column(9,
            div(class = "map-panel",
                leafletOutput("map", height = "82vh")
@@ -147,69 +183,104 @@ ui <- fluidPage(
     )
   ),
   
-  # JS for species button clicks only
   tags$script(HTML("
+    // Species buttons
     $(document).on('click', '.species-btn', function() {
       $('.species-btn').removeClass('active');
       $(this).addClass('active');
       Shiny.setInputValue('selected_species', $(this).data('val'), {priority: 'event'});
     });
+
+    // Group tabs
+    $(document).on('click', '.group-tab', function() {
+      $('.group-tab').removeClass('active');
+      $(this).addClass('active');
+      var grp = $(this).attr('id') === 'tab_fish' ? 'fish' : 'inverts';
+      Shiny.setInputValue('selected_group', grp, {priority: 'event'});
+    });
   ")),
-  tags$script(HTML("
-  function updateDecadeSlider() {
-    var idx = $('#decade_select').val() - 1;
-    var decades = ", jsonlite::toJSON(decade_list), ";
-    // Update the bubble above the handle
-    $('.irs-single').text(decades[idx]);
-    // Replace the min/max labels with first/last decade
-    $('.irs-min').text(decades[0]);
-    $('.irs-max').text(decades[decades.length - 1]);
-  }
-  $(document).on('input change', '#decade_select', updateDecadeSlider);
-  // Also run on load after a short delay for Shiny to render
-  $(document).ready(function() { setTimeout(updateDecadeSlider, 300); });
-  "))
+  
+  tags$script(HTML(paste0("
+    function updateDecadeSlider() {
+      var idx = $('#decade_select').val() - 1;
+      var decades = ", jsonlite::toJSON(decade_list), ";
+      $('.irs-single').text(decades[idx]);
+      $('.irs-min').text(decades[0]);
+      $('.irs-max').text(decades[decades.length - 1]);
+    }
+    $(document).on('input change', '#decade_select', updateDecadeSlider);
+    $(document).ready(function() { setTimeout(updateDecadeSlider, 300); });
+  ")))
 )
 
-# ── Server ────────────────────────────────────────────────────────────────────
+# ── Server ─────────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
   
   rv <- reactiveValues(
-    species = species_list[1],
+    group   = "fish",
+    species = fish_species_list[1],
     decade  = decade_list[1]
   )
   
-  observeEvent(input$selected_species, { rv$species <- input$selected_species })
-  observeEvent(input$decade_select, { rv$decade <- decade_list[input$decade_select] })
+  observeEvent(input$selected_group, {
+    rv$group <- input$selected_group
+    # Switch to first species of the new group
+    sp_list <- if (input$selected_group == "fish") fish_species_list else inverts_species_list
+    rv$species <- sp_list[1]
+  })
   
-  # Species buttons (show proper names, store codes as data-val)
+  observeEvent(input$selected_species, { rv$species <- input$selected_species })
+  observeEvent(input$decade_select,    { rv$decade  <- decade_list[input$decade_select] })
+  
+  # Reactive helpers that depend on current group
+  current_species_list <- reactive({
+    if (rv$group == "fish") fish_species_list else inverts_species_list
+  })
+  current_labels <- reactive({
+    if (rv$group == "fish") fish_labels else invert_labels
+  })
+  current_split <- reactive({
+    if (rv$group == "fish") fish_split else inverts_split
+  })
+  current_raw_by_sp <- reactive({
+    if (rv$group == "fish") raw_fish_by_sp else raw_inverts_by_sp
+  })
+  current_ens_by_sp <- reactive({
+    if (rv$group == "fish") ens_fish_by_sp else ens_inverts_by_sp
+  })
+  current_raster_list <- reactive({
+    if (rv$group == "fish") raster_list else raster_list_inverts
+  })
+  current_dat <- reactive({
+    if (rv$group == "fish") dat_fish else dat_inverts
+  })
+  
+  # Species buttons
   output$species_buttons <- renderUI({
-    lapply(species_list, function(sp) {
+    lapply(current_species_list(), function(sp) {
       cls   <- if (sp == rv$species) "species-btn active" else "species-btn"
-      label <- species_labels[[sp]]
-      if (is.null(label) || is.na(label)) label <- sp
+      label <- current_labels()[[sp]]
+      if (is.null(label) || is.na(label)) label <- gsub("_", " ", sp)
       tags$button(class = cls, `data-val` = sp, label)
     })
   })
   
-  # Filtered subset (uses pre-split list)
+  # Filtered subset
   subset_dat <- reactive({
     key <- paste(rv$species, rv$decade, sep = "||")
-    dat_split[[key]]
+    current_split()[[key]]
   })
   
   # Stats box
   output$stats_out <- renderUI({
     d <- subset_dat()
     if (is.null(d) || nrow(d) == 0) return(p("No data for this selection."))
-    label <- species_labels[[rv$species]]
-    if (is.null(label) || is.na(label)) label <- rv$species
+    label <- current_labels()[[rv$species]]
+    if (is.null(label) || is.na(label)) label <- gsub("_", " ", rv$species)
     HTML(sprintf(
       "<b>%s</b><br>Decade: %s<br><br>
-       Mean Decadal Environmental Suitability: <b>%.3f</b><br>
-       Range: <b>%.3f \u2013 %.3f</b>",
+       Mean Decadal Environmental Suitability: <b>%.3f</b><br>",
       label, rv$decade,
-      nrow(d),
       mean(d$pa_decade_mean_pa, na.rm = TRUE),
       min(d$pa_decade_mean_pa,  na.rm = TRUE),
       max(d$pa_decade_mean_pa,  na.rm = TRUE)
@@ -222,37 +293,34 @@ server <- function(input, output, session) {
       addProviderTiles(providers$CartoDB.Positron) %>%
       setView(lng = -122, lat = 36, zoom = 6) %>%
       addLegend(
-        position = "bottomright",
-        pal      = pal_fun,
-        values   = seq(0, 1, by = 0.1),
-        title    = "Mean Decadal<br>Environmental<br>Suitability",
-        opacity  = 0.85,
+        position  = "bottomright",
+        pal       = pal_fun,
+        values    = seq(0, 1, by = 0.1),
+        title     = "Mean Decadal<br>Environmental<br>Suitability",
+        opacity   = 0.85,
         labFormat = labelFormat(transform = function(x) sort(x, decreasing = TRUE))
       )
   })
   
   observe({
     leafletProxy("map") %>% clearGroup("pa_layer")
-    
     key <- paste0(rv$species, "_", rv$decade)
-    r   <- raster_list[[key]]
+    r   <- current_raster_list()[[key]]
     if (is.null(r)) return()
-    
     leafletProxy("map") %>%
       addRasterImage(r, colors = pal_fun, opacity = 0.85, group = "pa_layer")
   })
   
-  #time series plot
+  # Time series plot
   output$ts_plot <- renderPlotly({
+    decade_levels <- sort(unique(current_dat()$decade))
     
-    decade_levels <- sort(unique(dat$decade))
-    
-    ens <- dat_ens_by_species[[rv$species]] %>%
+    ens <- current_ens_by_sp()[[rv$species]] %>%
       group_by(decade) %>%
       summarise(mean_pa = mean(pa_decade_mean_pa, na.rm = TRUE), .groups = "drop") %>%
       mutate(decade = factor(decade, levels = decade_levels))
     
-    mod <- dat_raw_by_species[[rv$species]] %>%
+    mod <- current_raw_by_sp()[[rv$species]] %>%
       group_by(decade, roms_model) %>%
       summarise(mean_pa = mean(pa_decade_mean_pa, na.rm = TRUE), .groups = "drop") %>%
       mutate(decade = factor(decade, levels = decade_levels))
@@ -282,18 +350,16 @@ server <- function(input, output, session) {
     ggplotly(p, tooltip = c("y", "colour")) %>%
       layout(showlegend = FALSE) %>%
       config(displayModeBar = FALSE)
-    
-  })  # <-- closes renderPlotly
+  })
   
   output$ts_legend <- renderUI({
     model_colors <- c(
-      "gfdl"     = "#2a9d8f",
-      "ipsl"     = "#e9c46a",
-      "hadl"     = "#e05c2a",
-      "ensemble" = "#1a3a5c",
-      "histnew"  = "#7a90a8"
+      "gfdl"    = "#2a9d8f",
+      "ipsl"    = "#e9c46a",
+      "hadl"    = "#e05c2a",
+      "ensemble"= "#1a3a5c",
+      "histnew" = "#7a90a8"
     )
-    
     items <- lapply(names(model_colors), function(m) {
       tags$div(style = "display: inline-flex; align-items: center; margin-right: 10px;",
                tags$span(style = paste0(
@@ -303,14 +369,13 @@ server <- function(input, output, session) {
                tags$span(style = "font-size:0.75rem; color:#1a3a5c;", m)
       )
     })
-    
     tags$div(
       style = "display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 0;",
       tags$span(style = "font-size:0.75rem; font-weight:700; color:#7a90a8;
                          margin-right:6px; align-self:center;", "MODEL"),
       items
     )
-})
+  })
 }
 
 shinyApp(ui, server)
