@@ -14,6 +14,50 @@ raster_list_inverts <- readRDS("data/invert_raster_list.rds")
 dat_fish   <- readRDS("data/CPFV_PA_sp_decade_roms_n_ensemble_shiny.rds")
 dat_inverts <- readRDS("data/Inverts_PA_sp_decade_roms_n_ensemble_shiny.rds")
 
+# ── MPA decade binning ─────────────────────────────────────────────────────────
+assign_decade <- function(year) {
+  dplyr::case_when(
+    year >= 1995 & year <= 2000 ~ "1995_2000",
+    year >= 2001 & year <= 2010 ~ "2001_2010",
+    year >= 2011 & year <= 2020 ~ "2011_2020",
+    year >= 2021 & year <= 2030 ~ "2021_2030",
+    year >= 2031 & year <= 2040 ~ "2031_2040",
+    year >= 2041 & year <= 2050 ~ "2041_2050",
+    year >= 2051 & year <= 2060 ~ "2051_2060",
+    year >= 2061 & year <= 2070 ~ "2061_2070",
+    year >= 2071 & year <= 2080 ~ "2071_2080",
+    year >= 2081 & year <= 2090 ~ "2081_2090",
+    year >= 2091 & year <= 2100 ~ "2091_2100",
+    TRUE ~ NA_character_
+  )
+}
+
+decade_order <- c("1995_2000","2001_2010","2011_2020","2021_2030","2031_2040",
+                  "2041_2050","2051_2060","2061_2070","2071_2080","2081_2090",
+                  "2091_2100")
+
+# ── MPA data ───────────────────────────────────────────────────────────────────
+mpa_raw <- readRDS("data/all_sp_proportion_in_MPA_area_CA.rds") %>%
+  mutate(
+    species = as.character(species),
+    year    = as.numeric(as.character(year_factor)),
+    decade  = assign_decade(year)
+  ) %>%
+  filter(!is.na(prop_mpa), !is.na(decade))
+
+mpa_decadal <- mpa_raw %>%
+  group_by(species, decade) %>%
+  summarise(
+    mean_prop = mean(prop_mpa, na.rm = TRUE),
+    se_prop   = sd(prop_mpa, na.rm = TRUE) / sqrt(n()),
+    .groups   = "drop"
+  )
+
+mpa_by_sp <- mpa_decadal %>%
+  group_by(species) %>%
+  group_split() %>%
+  setNames(sort(unique(mpa_decadal$species)))
+
 # ── Helper: prepare a dat object for either group ─────────────────────────────
 prepare_dat <- function(raw) {
   raw <- raw %>%
@@ -92,7 +136,7 @@ decade_list <- sort(unique(dat_fish$decade))
 
 # ── Colour palette ─────────────────────────────────────────────────────────────
 pal_fun <- colorNumeric(
-  palette  = rev(brewer.pal(11, "RdYlBu")),
+  palette  = brewer.pal(11, "RdYlBu"),
   domain   = c(0, 1),
   na.color = "transparent"
 )
@@ -132,7 +176,6 @@ ui <- fluidPage(
                        border: 2px solid #c0cfe0; padding: 7px 10px;
                        color: #1a3a5c; font-size: 0.88rem; font-weight: 600;
                        background: white; }
-      /* Group tab switcher */
       .group-tabs { display: flex; gap: 0; margin-bottom: 14px;
                     border-radius: 8px; overflow: hidden;
                     border: 2px solid #1a3a5c; }
@@ -147,32 +190,35 @@ ui <- fluidPage(
   
   div(class = "app-header",
       h2("Species Distribution — Mean Decadal Environmental Suitability"),
-      div(class = "subtitle", "ROMS ensemble model · ensemble Mean Decadal Environmental Suitability"),
+      div(class = "subtitle",
+          "ROMS ensemble model · ensemble Mean Decadal Environmental Suitability")
   ),
   
   fluidRow(
     column(3,
            div(class = "sidebar-panel",
                
-               # ── Group tab switcher ──
                div(class = "section-label", "Decade"),
                sliderInput("decade_select", label = NULL,
-                           min   = 1,
-                           max   = length(decade_list),
-                           value = 1,
-                           step  = 1,
-                           width = "100%",
-                           ticks = FALSE,
+                           min = 1, max = length(decade_list), value = 1,
+                           step = 1, width = "100%", ticks = FALSE,
                            animate = FALSE),
+               
                div(class = "group-tabs",
-                   tags$button(id = "tab_fish",   class = "group-tab active", "Fish"),
-                   tags$button(id = "tab_inverts", class = "group-tab",       "Inverts")
+                   tags$button(id = "tab_fish",    class = "group-tab active", "Fish"),
+                   tags$button(id = "tab_inverts", class = "group-tab",        "Inverts")
                ),
+               
                div(class = "section-label", "Species"),
                uiOutput("species_buttons"),
+               
                div(class = "stat-box", uiOutput("stats_out")),
+               
                div(class = "section-label", "Mean Decadal Environmental Suitability"),
-               plotlyOutput("ts_plot", height = "220px"),
+               plotlyOutput("ts_plot", height = "200px"),
+               
+               div(class = "section-label", "Proportion of Suitable Area within MPAs"),
+               plotlyOutput("mpa_plot", height = "200px"),
                uiOutput("ts_legend")
            )
     ),
@@ -184,14 +230,11 @@ ui <- fluidPage(
   ),
   
   tags$script(HTML("
-    // Species buttons
     $(document).on('click', '.species-btn', function() {
       $('.species-btn').removeClass('active');
       $(this).addClass('active');
       Shiny.setInputValue('selected_species', $(this).data('val'), {priority: 'event'});
     });
-
-    // Group tabs
     $(document).on('click', '.group-tab', function() {
       $('.group-tab').removeClass('active');
       $(this).addClass('active');
@@ -224,15 +267,12 @@ server <- function(input, output, session) {
   
   observeEvent(input$selected_group, {
     rv$group <- input$selected_group
-    # Switch to first species of the new group
-    sp_list <- if (input$selected_group == "fish") fish_species_list else inverts_species_list
+    sp_list  <- if (input$selected_group == "fish") fish_species_list else inverts_species_list
     rv$species <- sp_list[1]
   })
-  
   observeEvent(input$selected_species, { rv$species <- input$selected_species })
   observeEvent(input$decade_select,    { rv$decade  <- decade_list[input$decade_select] })
   
-  # Reactive helpers that depend on current group
   current_species_list <- reactive({
     if (rv$group == "fish") fish_species_list else inverts_species_list
   })
@@ -255,7 +295,6 @@ server <- function(input, output, session) {
     if (rv$group == "fish") dat_fish else dat_inverts
   })
   
-  # Species buttons
   output$species_buttons <- renderUI({
     lapply(current_species_list(), function(sp) {
       cls   <- if (sp == rv$species) "species-btn active" else "species-btn"
@@ -265,13 +304,11 @@ server <- function(input, output, session) {
     })
   })
   
-  # Filtered subset
   subset_dat <- reactive({
     key <- paste(rv$species, rv$decade, sep = "||")
     current_split()[[key]]
   })
   
-  # Stats box
   output$stats_out <- renderUI({
     d <- subset_dat()
     if (is.null(d) || nrow(d) == 0) return(p("No data for this selection."))
@@ -281,24 +318,51 @@ server <- function(input, output, session) {
       "<b>%s</b><br>Decade: %s<br><br>
        Mean Decadal Environmental Suitability: <b>%.3f</b><br>",
       label, rv$decade,
-      mean(d$pa_decade_mean_pa, na.rm = TRUE),
-      min(d$pa_decade_mean_pa,  na.rm = TRUE),
-      max(d$pa_decade_mean_pa,  na.rm = TRUE)
+      mean(d$pa_decade_mean_pa, na.rm = TRUE)
     ))
   })
   
-  # Base map
+  # ── MPA plot ─────────────────────────────────────────────────────────────────
+  output$mpa_plot <- renderPlotly({
+    d <- mpa_by_sp[[rv$species]]
+    if (is.null(d) || nrow(d) == 0) return(plotly_empty())
+    
+    d <- d %>% mutate(decade = factor(decade, levels = decade_order))
+    
+    p <- ggplot(d, aes(x = decade, y = mean_prop, group = 1)) +
+      geom_ribbon(aes(ymin = mean_prop - se_prop,
+                      ymax = mean_prop + se_prop),
+                  fill = "#4a8abf", alpha = 0.25) +
+      geom_line(color = "#1a3a5c", linewidth = 0.8) +
+      geom_point(color = "#1a3a5c", size = 2) +
+      scale_y_continuous(limits = c(0, NA),
+                         expand = expansion(mult = c(0, 0.05))) +
+      labs(x = NULL, y = "Prop. area in MPAs") +
+      theme_minimal(base_size = 11) +
+      theme(
+        axis.text.x        = element_text(angle = 45, hjust = 1, size = 8),
+        axis.text.y        = element_text(size = 8),
+        panel.grid.major.x = element_blank(),
+        plot.background    = element_rect(fill = "transparent", color = NA),
+        panel.background   = element_rect(fill = "transparent", color = NA)
+      )
+    
+    ggplotly(p, tooltip = c("x", "y")) %>%
+      layout(showlegend = FALSE) %>%
+      config(displayModeBar = FALSE)
+  })
+  
+  # ── Base map ──────────────────────────────────────────────────────────────────
   output$map <- renderLeaflet({
     leaflet() %>%
       addProviderTiles(providers$CartoDB.Positron) %>%
       setView(lng = -122, lat = 36, zoom = 6) %>%
       addLegend(
-        position  = "bottomright",
-        pal       = pal_fun,
-        values    = seq(0, 1, by = 0.1),
-        title     = "Mean Decadal<br>Environmental<br>Suitability",
-        opacity   = 0.85,
-        labFormat = labelFormat(transform = function(x) sort(x, decreasing = TRUE))
+        position = "bottomright",
+        pal      = pal_fun,
+        values   = seq(1, 0, by = -0.1),
+        title    = "Mean Decadal<br>Environmental<br>Suitability",
+        opacity  = 0.85
       )
   })
   
@@ -311,14 +375,9 @@ server <- function(input, output, session) {
       addRasterImage(r, colors = pal_fun, opacity = 0.85, group = "pa_layer")
   })
   
-  # Time series plot
+  # ── Suitability time series ───────────────────────────────────────────────────
   output$ts_plot <- renderPlotly({
     decade_levels <- sort(unique(current_dat()$decade))
-    
-    ens <- current_ens_by_sp()[[rv$species]] %>%
-      group_by(decade) %>%
-      summarise(mean_pa = mean(pa_decade_mean_pa, na.rm = TRUE), .groups = "drop") %>%
-      mutate(decade = factor(decade, levels = decade_levels))
     
     mod <- current_raw_by_sp()[[rv$species]] %>%
       group_by(decade, roms_model) %>%
@@ -326,16 +385,19 @@ server <- function(input, output, session) {
       mutate(decade = factor(decade, levels = decade_levels))
     
     p <- ggplot() +
-      geom_point(data = mod, aes(x = decade, y = mean_pa, color = roms_model),
-                 size = 2.5, position = position_dodge(width = 0.4), show.legend = FALSE) +
-      scale_color_manual(values = c("gfdl"     = "#2a9d8f",
-                                    "hadl"     = "#e05c2a",
-                                    "ipsl"     = "#e9c46a",
-                                    "ensemble" = "#1a3a5c",
-                                    "histnew"  = "#7a90a8"),
-                         name = "Model") +
+      geom_point(data = mod,
+                 aes(x = decade, y = mean_pa, color = roms_model),
+                 size = 2.5, position = position_dodge(width = 0.4),
+                 show.legend = FALSE) +
+      scale_color_manual(values = c(
+        "gfdl"     = "#2a9d8f",
+        "hadl"     = "#e05c2a",
+        "ipsl"     = "#e9c46a",
+        "ensemble" = "#1a3a5c",
+        "histnew"  = "#7a90a8"
+      ), name = "Model") +
       scale_y_continuous(limits = c(0, 1), expand = c(0, 0)) +
-      labs(x = NULL, y = "Mean Decadal Environmental<br>Suitability") +
+      labs(x = NULL, y = "Mean Decadal Suitability") +
       theme_minimal(base_size = 11) +
       theme(
         axis.text.x        = element_text(angle = 45, hjust = 1, size = 8),
@@ -354,19 +416,20 @@ server <- function(input, output, session) {
   
   output$ts_legend <- renderUI({
     model_colors <- c(
-      "gfdl"    = "#2a9d8f",
-      "ipsl"    = "#e9c46a",
-      "hadl"    = "#e05c2a",
-      "ensemble"= "#1a3a5c",
-      "histnew" = "#7a90a8"
+      "gfdl"     = "#2a9d8f",
+      "ipsl"     = "#e9c46a",
+      "hadl"     = "#e05c2a",
+      "ensemble" = "#1a3a5c",
+      "histnew"  = "#7a90a8"
     )
     items <- lapply(names(model_colors), function(m) {
-      tags$div(style = "display: inline-flex; align-items: center; margin-right: 10px;",
-               tags$span(style = paste0(
-                 "display:inline-block; width:10px; height:10px; border-radius:50%;",
-                 "background:", model_colors[[m]], "; margin-right:4px;"
-               )),
-               tags$span(style = "font-size:0.75rem; color:#1a3a5c;", m)
+      tags$div(
+        style = "display: inline-flex; align-items: center; margin-right: 10px;",
+        tags$span(style = paste0(
+          "display:inline-block; width:10px; height:10px; border-radius:50%;",
+          "background:", model_colors[[m]], "; margin-right:4px;"
+        )),
+        tags$span(style = "font-size:0.75rem; color:#1a3a5c;", m)
       )
     })
     tags$div(
