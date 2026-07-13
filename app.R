@@ -6,6 +6,7 @@ library(RColorBrewer)
 library(ggplot2)
 library(plotly)
 library(jsonlite)
+library(sf)
 
 # ── Load data ──────────────────────────────────────────────────────────────────
 raster_list        <- readRDS("data/raster_list.rds")
@@ -13,6 +14,9 @@ raster_list_inverts <- readRDS("data/invert_raster_list.rds")
 
 dat_fish   <- readRDS("data/CPFV_PA_sp_decade_roms_n_ensemble_shiny.rds")
 dat_inverts <- readRDS("data/Inverts_PA_sp_decade_roms_n_ensemble_shiny.rds")
+
+mpa_sf <- st_read("shp/California_Marine_Protected_Areas_[ds582].shp") %>%
+  st_transform(4326)
 
 # ── MPA decade binning ─────────────────────────────────────────────────────────
 assign_decade <- function(year) {
@@ -136,7 +140,7 @@ decade_list <- sort(unique(dat_fish$decade))
 
 # ── Colour palette ─────────────────────────────────────────────────────────────
 pal_fun <- colorNumeric(
-  palette  = brewer.pal(11, "RdYlBu"),
+  palette  = rev(brewer.pal(11, "RdYlBu")),
   domain   = c(0, 1),
   na.color = "transparent"
 )
@@ -195,15 +199,19 @@ ui <- fluidPage(
   ),
   
   fluidRow(
-    column(3,
+    column(4,
            div(class = "sidebar-panel",
                
                div(class = "section-label", "Decade"),
                sliderInput("decade_select", label = NULL,
                            min = 1, max = length(decade_list), value = 1,
                            step = 1, width = "100%", ticks = FALSE,
-                           animate = FALSE),
-               
+                           animate = animationOptions(
+                             interval    = 1200,
+                             loop        = TRUE,
+                             playButton  = tags$span("▶ Play",  class = "anim-btn"),
+                             pauseButton = tags$span("❚❚ Pause", class = "anim-btn")
+                           )),
                div(class = "group-tabs",
                    tags$button(id = "tab_fish",    class = "group-tab active", "Fish"),
                    tags$button(id = "tab_inverts", class = "group-tab",        "Inverts")
@@ -214,15 +222,18 @@ ui <- fluidPage(
                
                div(class = "stat-box", uiOutput("stats_out")),
                
+               div(class = "section-label", "MPA Boundaries"),
+               checkboxInput("show_mpas", "Show MPA boundaries", value = TRUE),
+               
+               uiOutput("ts_legend"),
                div(class = "section-label", "Mean Decadal Environmental Suitability"),
                plotlyOutput("ts_plot", height = "200px"),
                
                div(class = "section-label", "Proportion of Suitable Area within MPAs"),
-               plotlyOutput("mpa_plot", height = "200px"),
-               uiOutput("ts_legend")
+               plotlyOutput("mpa_plot", height = "200px")
            )
     ),
-    column(9,
+    column(8,
            div(class = "map-panel",
                leafletOutput("map", height = "82vh")
            )
@@ -357,11 +368,19 @@ server <- function(input, output, session) {
     leaflet() %>%
       addProviderTiles(providers$CartoDB.Positron) %>%
       setView(lng = -122, lat = 36, zoom = 6) %>%
+      addPolygons(
+        data        = mpa_sf,
+        group       = "mpa_layer",
+        color       = "black",
+        weight      = 1.5,
+        opacity     = 0.85,
+        fill        = FALSE
+      ) %>%
       addLegend(
         position = "bottomright",
         pal      = pal_fun,
         values   = seq(1, 0, by = -0.1),
-        title    = "Mean Decadal<br>Environmental<br>Suitability",
+        title    = "Mean Decadal<br>Environmental<br>Suitability<br>(Ensemble)",
         opacity  = 0.85
       )
   })
@@ -373,6 +392,15 @@ server <- function(input, output, session) {
     if (is.null(r)) return()
     leafletProxy("map") %>%
       addRasterImage(r, colors = pal_fun, opacity = 0.85, group = "pa_layer")
+  })
+  
+  observeEvent(input$show_mpas, {
+    proxy <- leafletProxy("map")
+    if (input$show_mpas) {
+      proxy %>% showGroup("mpa_layer")
+    } else {
+      proxy %>% hideGroup("mpa_layer")
+    }
   })
   
   # ── Suitability time series ───────────────────────────────────────────────────
@@ -396,6 +424,9 @@ server <- function(input, output, session) {
         "ensemble" = "#1a3a5c",
         "histnew"  = "#7a90a8"
       ), name = "Model") +
+      geom_line(data = mod %>% filter(roms_model == "ensemble"),
+                aes(x = decade, y = mean_pa, group = 1),
+                color = "#1a3a5c", linewidth = 0.9) +
       scale_y_continuous(limits = c(0, 1), expand = c(0, 0)) +
       labs(x = NULL, y = "Mean Decadal Suitability") +
       theme_minimal(base_size = 11) +
@@ -424,21 +455,22 @@ server <- function(input, output, session) {
     )
     items <- lapply(names(model_colors), function(m) {
       tags$div(
-        style = "display: inline-flex; align-items: center; margin-right: 10px;",
+        style = "display: inline-flex; align-items: center; margin-right: 16px;",
         tags$span(style = paste0(
-          "display:inline-block; width:10px; height:10px; border-radius:50%;",
-          "background:", model_colors[[m]], "; margin-right:4px;"
+          "display:inline-block; width:14px; height:14px; border-radius:50%;",
+          "background:", model_colors[[m]], "; margin-right:6px;"
         )),
-        tags$span(style = "font-size:0.75rem; color:#1a3a5c;", m)
+        tags$span(style = "font-size:1.05rem; color:#1a3a5c;", m)
       )
     })
     tags$div(
-      style = "display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 0;",
-      tags$span(style = "font-size:0.75rem; font-weight:700; color:#7a90a8;
-                         margin-right:6px; align-self:center;", "MODEL"),
+      style = "display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0;",
+      tags$span(style = "font-size:1.05rem; font-weight:700; color:#7a90a8;
+                         margin-right:8px; align-self:center;", "MODEL"),
       items
     )
   })
 }
 
 shinyApp(ui, server)
+
