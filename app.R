@@ -15,6 +15,7 @@ raster_list_inverts <- readRDS("data/invert_raster_list.rds")
 dat_fish   <- readRDS("data/CPFV_PA_sp_decade_roms_n_ensemble_shiny.rds")
 dat_inverts <- readRDS("data/Inverts_PA_sp_decade_roms_n_ensemble_shiny.rds")
 
+sf::sf_use_s2(FALSE) # for memory
 mpa_sf <- st_read("shp/California_Marine_Protected_Areas_[ds582].shp") %>%
   st_transform(4326)
 
@@ -474,3 +475,43 @@ server <- function(input, output, session) {
 
 shinyApp(ui, server)
 
+library(leaflet)
+library(dplyr)
+
+selected_species <- "CA_Lobster"
+selected_group   <- "inverts"
+
+cog_data <- if (selected_group == "fish") cog_fish else cog_inverts
+
+d <- cog_data %>%
+  filter(species == selected_species) %>%
+  arrange(decade)
+
+pal_cog <- colorFactor("viridis", domain = d$decade)
+marker_colors <- pal_cog(d$decade)
+
+leaflet(d) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  fitBounds(lng1 = min(d$cog_lon) - 0.5, lat1 = min(d$cog_lat) - 0.5,
+            lng2 = max(d$cog_lon) + 0.5, lat2 = max(d$cog_lat) + 0.5) %>%
+  addPolylines(lng = d$cog_lon, lat = d$cog_lat,
+               color = "#1a3a5c", weight = 2.5, opacity = 0.7) %>%
+  addCircleMarkers(lng = d$cog_lon, lat = d$cog_lat,
+                   radius = 7, color = "white", weight = 1.5,
+                   fillColor = marker_colors, fillOpacity = 0.95,
+                   label = as.character(d$decade),
+                   labelOptions = labelOptions(noHide = FALSE, direction = "top")) %>%
+  addLegend(position = "bottomright",
+            pal = pal_cog, values = d$decade,
+            title = "Decade",
+            opacity = 0.9)
+
+
+cog_species <- cog_data %>% filter(species == selected_species)
+
+cor.test(cog_species$cog_lon, cog_species$cog_lat, method = "pearson")
+
+# Quick visual check
+plot(cog_species$cog_lon, cog_species$cog_lat,
+     xlab = "Longitude", ylab = "Latitude",
+     main = paste("COG lon vs lat —", selected_species))
