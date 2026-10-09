@@ -134,8 +134,6 @@ rsconnect::deployApp(appName = "prop80")
 - **`MPA_Analysis.R` is inconsistent with the app.** It uses `"2041-2050"` (hyphen) where everything else uses `"2041_2050"`, and it overwrites `decade` with `floor(year / 10) * 10`. It also calls `case_when()` without loading `dplyr`. The app has its own working version, so treat this script as scratch.
 - **`.Rhistory` and `.DS_Store` are committed.** Add them to `.gitignore`.
 
-*[Delete this section once fixed.]*
-
 ---
 
 ## Exploratory scripts
