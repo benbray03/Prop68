@@ -1,6 +1,8 @@
 library(readr)
 library(tidyverse)
 library(dplyr)
+library(ggplot2)
+library(maps)
 
 dat_fish   <- readRDS("data/CPFV_PA_sp_decade_roms_n_ensemble_shiny.rds")
 dat_inverts <- readRDS("data/Inverts_PA_sp_decade_roms_n_ensemble_shiny.rds")
@@ -73,3 +75,52 @@ compute_cog <- function(data) {
 
 cog_fish    <- compute_cog(dat_fish)
 cog_inverts <- compute_cog(dat_inverts)
+
+#need to change inverts to fish vice versa based on the species
+cog_species_test <- cog_fish %>%
+  filter(species == "Black_rockfish")
+
+cog_species_test_long <- cog_species_test %>%
+  select(decade, cog_lat, cog_lon) %>%
+  pivot_longer(cols = c(cog_lat, cog_lon),
+               names_to = "metric",
+               values_to = "value") %>%
+  mutate(metric = recode(metric,
+                         cog_lat = "Latitude",
+                         cog_lon = "Longitude"))
+
+ggplot(cog_species_test_long, aes(x = decade, y = value, group = metric)) +
+  geom_line(color = "steelblue", linewidth = 1) +
+  geom_point(color = "steelblue", size = 2) +
+  facet_wrap(~ metric, scales = "free_y", ncol = 1) +
+  labs(
+    title = "Center of Gravity Over Time",
+    x = "Decade",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+
+
+# Map of COG
+ca_coast <- map_data("state", region = "california")
+
+ggplot() +
+  geom_polygon(data = ca_coast, aes(x = long, y = lat, group = group),
+               fill = "grey90", color = "grey60") +
+  geom_path(data = cog_species_test, aes(x = cog_lon, y = cog_lat),
+            color = "steelblue", linewidth = 0.6, alpha = 0.6) +
+  geom_point(data = cog_species_test, aes(x = cog_lon, y = cog_lat, color = decade),
+             size = 3) +
+  coord_quickmap(xlim = range(cog_species_test$cog_lon) + c(-1, 1),
+                 ylim = range(cog_species_test$cog_lat) + c(-1, 1)) +
+  scale_color_viridis_d(name = "Decade") +
+  labs(
+    title = "Center of Gravity by Decade",
+    x = "Longitude", y = "Latitude"
+  ) +
+  theme_minimal(base_size = 13)
+
