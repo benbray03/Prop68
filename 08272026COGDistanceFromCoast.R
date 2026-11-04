@@ -205,3 +205,179 @@ ggplot() +
   labs(title = "Center of Gravity by Decade", x = "Longitude", y = "Latitude") +
   theme_minimal(base_size = 13)
 
+
+# =====================================================================
+# Loop over every species: compare trends in lat / lon COG with
+# distance from the coast (cross-shore COG).
+# Run this AFTER cog_fish, cog_inverts, coast_line_fish and
+# coast_line_inverts have been created.
+# =====================================================================
+library(patchwork)   # install.packages("patchwork") if needed
+
+out_dir <- "figures/cog_by_species"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# ---------------------------------------------------------------------
+# 1. Un-project every species at once, each with its own coastline
+#    (cross-shore is in metres in EPSG:3310; positive = offshore,
+#     because the normals were flipped to point toward water)
+# ---------------------------------------------------------------------
+cog_all <- bind_rows(
+  unproject_alongshore(cog_fish,    coast_line_fish)    %>% mutate(group = "Fish"),
+  unproject_alongshore(cog_inverts, coast_line_inverts) %>% mutate(group = "Inverts")
+) %>%
+  mutate(
+    crossshore_km = cog_crossshore / 1000,
+    alongshore_km = cog_alongshore / 1000
+  ) %>%
+  arrange(group, species, decade)
+
+# ---------------------------------------------------------------------
+# 1b. Plain lat/lon COG (weighted mean of cell lat & lon, no coastline
+#     projection) for comparison on the map
+# ---------------------------------------------------------------------
+compute_cog_latlon <- function(data) {
+  data %>%
+    filter(!is.na(pa_decade_mean_pa), pa_decade_mean_pa > 0) %>%
+    group_by(species, decade) %>%
+    summarise(
+      cog_lat_ll = weighted.mean(lat, pa_decade_mean_pa, na.rm = TRUE),
+      cog_lon_ll = weighted.mean(lon, pa_decade_mean_pa, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(decade = factor(decade, levels = decade_order))
+}
+
+cog_latlon_all <- bind_rows(
+  compute_cog_latlon(dat_fish)    %>% mutate(group = "Fish"),
+  compute_cog_latlon(dat_inverts) %>% mutate(group = "Inverts")
+)
+
+cog_all <- cog_all %>%
+  left_join(cog_latlon_all, by = c("group", "species", "decade"))
+
+ca_coast <- map_data("state", region = "california")
+
+metric_cols <- c("Latitude"                 = "#1b6ca8",
+                 "Longitude"                = "#e07a1f",
+                 "Distance from coast (km)" = "#2a9d55")
+
+# z-score that doesn't blow up when a metric never changes
+safe_z <- function(x) {
+  s <- sd(x, na.rm = TRUE)
+  if (is.na(s) || s == 0) return(rep(0, length(x)))
+  (x - mean(x, na.rm = TRUE)) / s
+}
+
+# ---------------------------------------------------------------------
+# 2. Plot function for one species
+#    Top:    all three metrics standardised and overlaid (compare shape)
+#    Bottom: each metric in its real units
+# ---------------------------------------------------------------------
+plot_species_trends <- function(df, sp, grp) {
+  sp_label <- gsub("_", " ", sp)
+  
+  long <- df %>%
+    select(decade,
+           Latitude                   = cog_lat,
+           Longitude                  = cog_lon,
+           `Distance from coast (km)` = crossshore_km) %>%
+    pivot_longer(-decade, names_to = "metric", values_to = "value") %>%
+    mutate(metric = factor(metric, levels = names(metric_cols))) %>%
+    group_by(metric) %>%
+    mutate(z = safe_z(value)) %>%
+    ungroup()
+  
+  p_overlay <- ggplot(long, aes(x = decade, y = z, colour = metric, group = metric)) +
+    geom_hline(yintercept = 0, colour = "grey75", linetype = "dashed") +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    scale_colour_manual(values = metric_cols, name = NULL) +
+    labs(title = paste0(sp_label, "  (", grp, ")"),
+         subtitle = "Standardised trends (z-score within each metric) — compare direction and timing",
+         x = NULL, y = "Standardised value") +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "top",
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(face = "bold.italic"))
+  
+  p_raw <- ggplot(long, aes(x = decade, y = value, colour = metric, group = metric)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 1.8) +
+    facet_wrap(~ metric, scales = "free_y", nrow = 1) +
+    scale_colour_manual(values = metric_cols, guide = "none") +
+    labs(subtitle = "Raw values", x = "Decade", y = NULL) +
+    theme_minimal(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text = element_text(face = "bold"))
+  
+  # Map of the COG track, coloured by decade
+  # (window is at least 2 deg wide/tall so small shifts still show context)
+  pad_range <- function(x, min_span = 2) {
+    r <- range(x, na.rm = TRUE)
+    mid <- mean(r); half <- max(diff(r) / 2 + 0.5, min_span / 2)
+    c(mid - half, mid + half)
+  }
+  
+  map_df <- bind_rows(
+    df %>% transmute(decade, lon = cog_lon,    lat = cog_lat,    method = "Coastline-based"),
+    df %>% transmute(decade, lon = cog_lon_ll, lat = cog_lat_ll, method = "Plain lat/lon")
+  ) %>%
+    mutate(method = factor(method, levels = c("Coastline-based", "Plain lat/lon")))
+  
+  p_map <- ggplot() +
+    geom_polygon(data = ca_coast, aes(x = long, y = lat, group = group),
+                 fill = "grey90", colour = "grey60") +
+    geom_path(data = map_df, aes(x = lon, y = lat, linetype = method),
+              colour = "grey30", linewidth = 0.6, alpha = 0.7) +
+    geom_point(data = map_df, aes(x = lon, y = lat, colour = decade, shape = method),
+               size = 3) +
+    coord_quickmap(xlim = pad_range(map_df$lon), ylim = pad_range(map_df$lat)) +
+    scale_colour_viridis_d(name = "Decade", drop = FALSE) +
+    scale_shape_manual(values = c("Coastline-based" = 16, "Plain lat/lon" = 17),
+                       name = "COG method") +
+    scale_linetype_manual(values = c("Coastline-based" = "solid", "Plain lat/lon" = "dashed"),
+                          name = "COG method") +
+    labs(subtitle = "COG by decade", x = "Longitude", y = "Latitude") +
+    theme_minimal(base_size = 12) +
+    theme(legend.text = element_text(size = 8),
+          legend.key.size = unit(0.4, "cm"))
+  
+  ((p_overlay | p_map) + plot_layout(widths = c(1.6, 1))) / p_raw +
+    plot_layout(heights = c(1.3, 1))
+}
+
+# ---------------------------------------------------------------------
+# 3. Loop over all species
+# ---------------------------------------------------------------------
+species_keys <- cog_all %>% distinct(group, species)
+
+plots <- map2(species_keys$group, species_keys$species, function(grp, sp) {
+  df <- cog_all %>% filter(group == grp, species == sp) %>% arrange(decade)
+  plot_species_trends(df, sp, grp)
+})
+names(plots) <- paste(species_keys$group, species_keys$species, sep = "_")
+
+# One multi-page PDF (easy to flip through) ...
+pdf(file.path(out_dir, "all_species_cog_trends.pdf"), width = 14, height = 9)
+walk(plots, print)
+dev.off()
+
+# ... and one PNG per species
+iwalk(plots, ~ ggsave(file.path(out_dir, paste0(.y, ".png")), .x,
+                      width = 14, height = 9, dpi = 200, bg = "white"))
+
+# ---------------------------------------------------------------------
+# 4. Optional: a quick summary table of net change, first -> last decade
+# ---------------------------------------------------------------------
+cog_change <- cog_all %>%
+  group_by(group, species) %>%
+  summarise(
+    d_lat           = last(cog_lat)       - first(cog_lat),
+    d_lon           = last(cog_lon)       - first(cog_lon),
+    d_crossshore_km = last(crossshore_km) - first(crossshore_km),
+    d_alongshore_km = last(alongshore_km) - first(alongshore_km),
+    .groups = "drop"
+  )
+
+write_csv(cog_change, file.path(out_dir, "cog_net_change_by_species.csv"))
